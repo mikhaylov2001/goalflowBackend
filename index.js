@@ -11,31 +11,50 @@ app.use(express.json());
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
+  max: 5,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
 });
 
-// ─── GOALS ───
+// Keep connection warm (prevents Render cold starts)
+setInterval(async () => {
+  try { await pool.query("SELECT 1"); } catch {}
+}, 4 * 60 * 1000); // every 4 min
+
+// ─── GOALS (single query with JOINs) ───
 
 app.get("/api/goals", async (req, res) => {
   try {
-    const goalsRes = await pool.query("SELECT * FROM goals ORDER BY created_at DESC");
-    const goals = [];
-    for (const g of goalsRes.rows) {
-      const tasksRes = await pool.query("SELECT * FROM tasks WHERE goal_id = $1 ORDER BY sort_order, created_at", [g.id]);
-      const tasks = [];
-      for (const t of tasksRes.rows) {
-        const microsRes = await pool.query("SELECT * FROM microtasks WHERE task_id = $1 ORDER BY sort_order, created_at", [t.id]);
-        tasks.push({
-          id: t.id, title: t.title, done: t.done, prio: t.priority,
-          children: microsRes.rows.map((m) => ({ id: m.id, title: m.title, done: m.done })),
-        });
-      }
-      goals.push({
-        id: g.id, title: g.title, desc: g.description, cat: g.category,
-        prio: g.priority, deadline: g.deadline, reward: g.reward, done: g.done,
-        notif: { enabled: g.notif_enabled, freq: g.notif_freq, time: g.notif_time, day: g.notif_day },
-        tasks,
+    const [goalsRes, tasksRes, microsRes] = await Promise.all([
+      pool.query("SELECT * FROM goals ORDER BY created_at DESC"),
+      pool.query("SELECT * FROM tasks ORDER BY sort_order, created_at"),
+      pool.query("SELECT * FROM microtasks ORDER BY sort_order, created_at"),
+    ]);
+
+    // Index microtasks by task_id
+    const microsByTask = {};
+    for (const m of microsRes.rows) {
+      if (!microsByTask[m.task_id]) microsByTask[m.task_id] = [];
+      microsByTask[m.task_id].push({ id: m.id, title: m.title, done: m.done });
+    }
+
+    // Index tasks by goal_id
+    const tasksByGoal = {};
+    for (const t of tasksRes.rows) {
+      if (!tasksByGoal[t.goal_id]) tasksByGoal[t.goal_id] = [];
+      tasksByGoal[t.goal_id].push({
+        id: t.id, title: t.title, done: t.done, prio: t.priority,
+        children: microsByTask[t.id] || [],
       });
     }
+
+    const goals = goalsRes.rows.map((g) => ({
+      id: g.id, title: g.title, desc: g.description, cat: g.category,
+      prio: g.priority, deadline: g.deadline, reward: g.reward, done: g.done,
+      notif: { enabled: g.notif_enabled, freq: g.notif_freq, time: g.notif_time, day: g.notif_day },
+      tasks: tasksByGoal[g.id] || [],
+    }));
+
     res.json(goals);
   } catch (err) {
     console.error(err);
@@ -179,18 +198,91 @@ app.delete("/api/microtasks/:id", async (req, res) => {
   }
 });
 
+// ─── BATCH: toggle task + all microtasks in one request ───
+
+app.post("/api/tasks/:id/toggle", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const taskRes = await client.query("SELECT done FROM tasks WHERE id=$1", [req.params.id]);
+    if (taskRes.rows.length === 0) { await client.query("ROLLBACK"); return res.status(404).json({ error: "Not found" }); }
+    const newDone = !taskRes.rows[0].done;
+    await client.query("UPDATE tasks SET done=$2 WHERE id=$1", [req.params.id, newDone]);
+    await client.query("UPDATE microtasks SET done=$2 WHERE task_id=$1", [req.params.id, newDone]);
+    await client.query("COMMIT");
+    res.json({ done: newDone });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error(err);
+    res.status(500).json({ error: "Failed" });
+  } finally {
+    client.release();
+  }
+});
+
+// ─── BATCH: toggle microtask + auto-complete parent task ───
+
+app.post("/api/microtasks/:id/toggle", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const microRes = await client.query("SELECT * FROM microtasks WHERE id=$1", [req.params.id]);
+    if (microRes.rows.length === 0) { await client.query("ROLLBACK"); return res.status(404).json({ error: "Not found" }); }
+    const micro = microRes.rows[0];
+    const newDone = !micro.done;
+    await client.query("UPDATE microtasks SET done=$2 WHERE id=$1", [req.params.id, newDone]);
+
+    // Check if all siblings are done → auto-complete parent task
+    const siblingsRes = await client.query(
+      "SELECT done FROM microtasks WHERE task_id=$1 AND id!=$2",
+      [micro.task_id, req.params.id]
+    );
+    const allDone = newDone && siblingsRes.rows.every((r) => r.done);
+    const anyUndone = !newDone || siblingsRes.rows.some((r) => !r.done);
+
+    if (allDone) {
+      await client.query("UPDATE tasks SET done=true WHERE id=$1", [micro.task_id]);
+    } else if (!newDone) {
+      await client.query("UPDATE tasks SET done=false WHERE id=$1", [micro.task_id]);
+    }
+
+    // Check if all tasks of the goal are done → auto-complete goal
+    const taskRes = await client.query("SELECT goal_id FROM tasks WHERE id=$1", [micro.task_id]);
+    if (taskRes.rows.length > 0) {
+      const goalId = taskRes.rows[0].goal_id;
+      const allTasksRes = await client.query("SELECT done FROM tasks WHERE goal_id=$1", [goalId]);
+      const goalDone = allTasksRes.rows.length > 0 && allTasksRes.rows.every((r) => r.done);
+      await client.query("UPDATE goals SET done=$2 WHERE id=$1", [goalId, goalDone]);
+    }
+
+    await client.query("COMMIT");
+    res.json({ done: newDone, taskDone: allDone });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error(err);
+    res.status(500).json({ error: "Failed" });
+  } finally {
+    client.release();
+  }
+});
+
 // ─── HABITS ───
 
 app.get("/api/habits", async (req, res) => {
   try {
-    const habitsRes = await pool.query("SELECT * FROM habits ORDER BY created_at DESC");
-    const habits = [];
-    for (const h of habitsRes.rows) {
-      const logsRes = await pool.query("SELECT log_date FROM habit_logs WHERE habit_id = $1", [h.id]);
-      const logs = {};
-      logsRes.rows.forEach((r) => { logs[r.log_date] = true; });
-      habits.push({ id: h.id, title: h.title, emoji: h.emoji, color: h.color, streak: h.streak, logs });
+    const [habitsRes, logsRes] = await Promise.all([
+      pool.query("SELECT * FROM habits ORDER BY created_at DESC"),
+      pool.query("SELECT * FROM habit_logs"),
+    ]);
+    const logsByHabit = {};
+    for (const r of logsRes.rows) {
+      if (!logsByHabit[r.habit_id]) logsByHabit[r.habit_id] = {};
+      logsByHabit[r.habit_id][r.log_date] = true;
     }
+    const habits = habitsRes.rows.map((h) => ({
+      id: h.id, title: h.title, emoji: h.emoji, color: h.color, streak: h.streak,
+      logs: logsByHabit[h.id] || {},
+    }));
     res.json(habits);
   } catch (err) {
     console.error(err);
@@ -241,8 +333,7 @@ app.post("/api/habits/:id/toggle", async (req, res) => {
   try {
     const { date } = req.body;
     const existing = await pool.query(
-      "SELECT id FROM habit_logs WHERE habit_id=$1 AND log_date=$2",
-      [req.params.id, date]
+      "SELECT id FROM habit_logs WHERE habit_id=$1 AND log_date=$2", [req.params.id, date]
     );
     if (existing.rows.length > 0) {
       await pool.query("DELETE FROM habit_logs WHERE habit_id=$1 AND log_date=$2", [req.params.id, date]);
@@ -250,15 +341,13 @@ app.post("/api/habits/:id/toggle", async (req, res) => {
       await pool.query("INSERT INTO habit_logs (habit_id, log_date) VALUES ($1,$2)", [req.params.id, date]);
     }
     // Calculate streak
-    const logsRes = await pool.query("SELECT log_date FROM habit_logs WHERE habit_id=$1 ORDER BY log_date DESC", [req.params.id]);
+    const logsRes = await pool.query("SELECT log_date FROM habit_logs WHERE habit_id=$1", [req.params.id]);
     const logSet = new Set(logsRes.rows.map((r) => r.log_date));
     let streak = 0;
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
+    const d = new Date(); d.setHours(0, 0, 0, 0);
     while (true) {
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      if (logSet.has(key)) { streak++; d.setDate(d.getDate() - 1); }
-      else break;
+      if (logSet.has(key)) { streak++; d.setDate(d.getDate() - 1); } else break;
     }
     await pool.query("UPDATE habits SET streak=$2 WHERE id=$1", [req.params.id, streak]);
     res.json({ streak, toggled: existing.rows.length === 0 });
@@ -321,8 +410,8 @@ app.delete("/api/wishes/:id", async (req, res) => {
   }
 });
 
-// ─── Health check ───
+// ─── Health ───
 app.get("/api/health", (req, res) => res.json({ status: "ok", time: new Date().toISOString() }));
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`🚀 GoalFlow API running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 GoalFlow API on port ${PORT}`));
