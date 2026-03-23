@@ -62,6 +62,17 @@ async function migrate() {
         UNIQUE(habit_id, log_date)
       );
 
+      CREATE TABLE IF NOT EXISTS ideas (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        note TEXT DEFAULT '',
+        emoji TEXT DEFAULT '💡',
+        tag TEXT DEFAULT 'Другое',
+        color TEXT DEFAULT '#6366F1',
+        done BOOLEAN DEFAULT false,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
       CREATE TABLE IF NOT EXISTS wishes (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,

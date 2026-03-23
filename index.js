@@ -410,6 +410,58 @@ app.delete("/api/wishes/:id", async (req, res) => {
   }
 });
 
+app.get("/api/ideas", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM ideas ORDER BY created_at DESC");
+    res.json(result.rows.map((i) => ({
+      id: i.id, title: i.title, note: i.note, emoji: i.emoji,
+      tag: i.tag, color: i.color, done: i.done, created: i.created_at,
+    })));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to load ideas" });
+  }
+});
+
+app.post("/api/ideas", async (req, res) => {
+  try {
+    const { id, title, note, emoji, tag, color } = req.body;
+    const iid = id || uuidv4();
+    await pool.query(
+      "INSERT INTO ideas (id, title, note, emoji, tag, color) VALUES ($1,$2,$3,$4,$5,$6)",
+      [iid, title, note || "", emoji || "💡", tag || "Другое", color || "#6366F1"]
+    );
+    res.json({ id: iid });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to create idea" });
+  }
+});
+
+app.put("/api/ideas/:id", async (req, res) => {
+  try {
+    const { title, note, emoji, tag, color, done } = req.body;
+    await pool.query(
+      "UPDATE ideas SET title=$2, note=$3, emoji=$4, tag=$5, color=$6, done=$7 WHERE id=$1",
+      [req.params.id, title, note || "", emoji || "💡", tag || "Другое", color || "#6366F1", done || false]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to update idea" });
+  }
+});
+
+app.delete("/api/ideas/:id", async (req, res) => {
+  try {
+    await pool.query("DELETE FROM ideas WHERE id = $1", [req.params.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to delete idea" });
+  }
+});
+
 // ─── Health ───
 app.get("/api/health", (req, res) => res.json({ status: "ok", time: new Date().toISOString() }));
 
