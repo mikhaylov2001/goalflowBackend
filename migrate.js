@@ -81,6 +81,16 @@ async function migrate() {
         done BOOLEAN DEFAULT false,
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
+
+      CREATE TABLE IF NOT EXISTS calendar_tasks (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        task_date TEXT NOT NULL,
+        done BOOLEAN DEFAULT false,
+        priority TEXT DEFAULT 'medium',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
     `);
     console.log("✅ Migration complete!");
   } catch (err) {

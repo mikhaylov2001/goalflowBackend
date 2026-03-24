@@ -198,6 +198,68 @@ app.delete("/api/microtasks/:id", async (req, res) => {
   }
 });
 
+// ─── CALENDAR TASKS ───
+app.get("/api/calendar", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM calendar_tasks ORDER BY task_date, priority, created_at");
+    res.json(result.rows.map(r => ({
+      id: r.id,
+      title: r.title,
+      date: r.task_date,
+      done: r.done,
+      prio: r.priority,
+    })));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to load calendar tasks" });
+  }
+});
+
+app.post("/api/calendar", async (req, res) => {
+  try {
+    const { id, title, date, prio } = req.body;
+    const tid = id || uuidv4();
+    await pool.query(
+      "INSERT INTO calendar_tasks (id, title, task_date, priority) VALUES ($1, $2, $3, $4)",
+      [tid, title, date, prio || "medium"]
+    );
+    res.json({ id: tid });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to create calendar task" });
+  }
+});
+
+app.put("/api/calendar/:id", async (req, res) => {
+  try {
+    const { title, date, done, prio } = req.body;
+    const sets = [];
+    const vals = [req.params.id];
+    let i = 2;
+    if (title !== undefined) { sets.push(`title=$${i++}`); vals.push(title); }
+    if (date !== undefined) { sets.push(`task_date=$${i++}`); vals.push(date); }
+    if (done !== undefined) { sets.push(`done=$${i++}`); vals.push(done); }
+    if (prio !== undefined) { sets.push(`priority=$${i++}`); vals.push(prio); }
+    if (sets.length > 0) {
+      await pool.query(`UPDATE calendar_tasks SET ${sets.join(",")} WHERE id=$1`, vals);
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to update calendar task" });
+  }
+});
+
+app.delete("/api/calendar/:id", async (req, res) => {
+  try {
+    await pool.query("DELETE FROM calendar_tasks WHERE id = $1", [req.params.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to delete calendar task" });
+  }
+});
+
 // ─── BATCH: toggle task + all microtasks in one request ───
 
 app.post("/api/tasks/:id/toggle", async (req, res) => {
