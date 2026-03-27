@@ -57,6 +57,8 @@ function mapCalendarTask(row) {
   };
 }
 
+// ─── GOALS ───
+
 app.get("/api/goals", async (req, res) => {
   try {
     const [goalsRes, tasksRes, microsRes] = await Promise.all([
@@ -202,6 +204,8 @@ app.delete("/api/goals/:id", async (req, res) => {
   }
 });
 
+// ─── TASKS ───
+
 app.post("/api/tasks", async (req, res) => {
   try {
     const { id, goal_id, title, prio } = req.body;
@@ -260,6 +264,8 @@ app.delete("/api/tasks/:id", async (req, res) => {
   }
 });
 
+// ─── MICROTASKS ───
+
 app.post("/api/microtasks", async (req, res) => {
   try {
     const { id, task_id, title } = req.body;
@@ -314,6 +320,8 @@ app.delete("/api/microtasks/:id", async (req, res) => {
   }
 });
 
+// ─── BATCH TOGGLES ───
+
 app.post("/api/tasks/:id/toggle", async (req, res) => {
   const client = await pool.connect();
 
@@ -332,11 +340,8 @@ app.post("/api/tasks/:id/toggle", async (req, res) => {
     const task = taskRes.rows[0];
     const newDone = !task.done;
 
-    await client.query("UPDATE tasks SET done = $2 WHERE id = $1", [req.params.id, newDone]);
-    await client.query("UPDATE microtasks SET done = $2 WHERE task_id = $1", [
-      req.params.id,
-      newDone,
-    ]);
+    await client.query("UPDATE tasks SET done = $2 WHERE id = $1", [task.id, newDone]);
+    await client.query("UPDATE microtasks SET done = $2 WHERE task_id = $1", [task.id, newDone]);
 
     const allTasksRes = await client.query("SELECT done FROM tasks WHERE goal_id = $1", [
       task.goal_id,
@@ -377,7 +382,7 @@ app.post("/api/microtasks/:id/toggle", async (req, res) => {
     const newDone = !micro.done;
 
     await client.query("UPDATE microtasks SET done = $2 WHERE id = $1", [
-      req.params.id,
+      micro.id,
       newDone,
     ]);
 
@@ -387,9 +392,14 @@ app.post("/api/microtasks/:id/toggle", async (req, res) => {
     const taskDone =
       siblingsRes.rows.length > 0 && siblingsRes.rows.every((row) => row.done === true);
 
-    await client.query("UPDATE tasks SET done = $2 WHERE id = $1", [micro.task_id, taskDone]);
+    await client.query("UPDATE tasks SET done = $2 WHERE id = $1", [
+      micro.task_id,
+      taskDone,
+    ]);
 
-    const taskRes = await client.query("SELECT goal_id FROM tasks WHERE id = $1", [micro.task_id]);
+    const taskRes = await client.query("SELECT goal_id FROM tasks WHERE id = $1", [
+      micro.task_id,
+    ]);
 
     if (taskRes.rows.length > 0) {
       const goalId = taskRes.rows[0].goal_id;
@@ -412,6 +422,8 @@ app.post("/api/microtasks/:id/toggle", async (req, res) => {
     client.release();
   }
 });
+
+// ─── CALENDAR ───
 
 app.get("/api/calendar", async (req, res) => {
   try {
@@ -486,6 +498,8 @@ app.delete("/api/calendar/:id", async (req, res) => {
     res.status(500).json({ error: "Failed to delete calendar task" });
   }
 });
+
+// ─── HABITS ───
 
 app.get("/api/habits", async (req, res) => {
   try {
@@ -600,6 +614,8 @@ app.post("/api/habits/:id/toggle", async (req, res) => {
   }
 });
 
+// ─── WISHES ───
+
 app.get("/api/wishes", async (req, res) => {
   try {
     const result = await pool.query("SELECT * FROM wishes ORDER BY created_at DESC");
@@ -665,6 +681,8 @@ app.delete("/api/wishes/:id", async (req, res) => {
     res.status(500).json({ error: "Failed to delete wish" });
   }
 });
+
+// ─── IDEAS ───
 
 app.get("/api/ideas", async (req, res) => {
   try {
@@ -737,6 +755,8 @@ app.delete("/api/ideas/:id", async (req, res) => {
     res.status(500).json({ error: "Failed to delete idea" });
   }
 });
+
+// ─── HEALTH ───
 
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", time: new Date().toISOString() });
