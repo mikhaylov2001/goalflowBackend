@@ -529,3 +529,7 @@ app.get("/api/health", (req, res) => res.json({ status: "ok", time: new Date().t
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`🚀 GoalFlow API on port ${PORT}`));
+
+app.get('/ping', (req, res) => {
+  res.json({ status: 'ok' });
+});
