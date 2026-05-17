@@ -524,12 +524,12 @@ app.delete("/api/ideas/:id", async (req, res) => {
   }
 });
 
-// ─── Health ───
+// ─── Health (для UptimeRobot / cron — без обращения к БД) ───
+const pingHandler = (req, res) => res.json({ status: "ok" });
+app.get("/", (req, res) => res.json({ status: "ok", service: "goalflow-api" }));
+app.get("/ping", pingHandler);
+app.get("/api/ping", pingHandler);
 app.get("/api/health", (req, res) => res.json({ status: "ok", time: new Date().toISOString() }));
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`🚀 GoalFlow API on port ${PORT}`));
-
-app.get('/ping', (req, res) => {
-  res.json({ status: 'ok' });
-});
